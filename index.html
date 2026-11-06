@@ -38,6 +38,8 @@
   img.thumb { width:44px; height:44px; object-fit:cover; border-radius:6px; cursor:pointer; border:1px solid var(--line); }
   .tag { font-size:11px; background:#eef2ff; color:#3730a3; padding:2px 6px; border-radius:4px; }
   .muted { color:var(--muted); font-size:13px; }
+  .actions { display:flex; gap:5px; flex-wrap:wrap; }
+  .actions button { padding:6px 9px; }
   dialog { border:none; border-radius:10px; padding:0; max-width:95vw; }
   dialog img { max-width:95vw; max-height:85vh; display:block; }
   dialog button { position:absolute; top:8px; right:8px; }
@@ -70,7 +72,7 @@
   </div>
 
   <section>
-    <h2>Add entry</h2>
+    <h2 id="formTitle">Add entry</h2>
     <form id="f" onsubmit="addEntry(event)">
       <div class="full toggle">
         <label><input type="radio" name="type" value="in"> Money in</label>
@@ -93,10 +95,22 @@
         <input type="file" name="photo" accept="image/*" capture="environment" id="photo">
       </label>
       <div class="full row">
-        <button type="submit">Save entry</button>
+        <button type="submit" id="saveButton">Save entry</button>
+        <button type="button" class="ghost" id="cancelEdit" onclick="cancelEditing()" hidden>Cancel edit</button>
         <span class="muted" id="saveMsg"></span>
       </div>
     </form>
+  </section>
+
+  <section>
+    <h2>Import receipts and income records</h2>
+    <p class="muted">Select screenshots or receipt images from your phone or files. Review each result before saving it as money in or money out. For email receipts, first save the attachment or screenshot to your device.</p>
+    <input type="file" id="batchFiles" accept="image/*,.csv,text/csv" multiple onchange="queueFiles(event)">
+    <div id="queueStatus" class="muted" role="status" style="margin-top:8px"></div>
+    <div id="queueActions" class="row" style="margin-top:8px" hidden>
+      <button type="button" onclick="loadNextReceipt()">Review next image</button>
+      <button type="button" class="ghost" onclick="clearReceiptQueue()">Clear queue</button>
+    </div>
   </section>
 
   <section>
@@ -136,6 +150,8 @@ const CATS_OUT = [
 const CATS_IN = ["Client services", "Product sales", "Tips", "Other income"];
 const KEY = "hairstylistBooks.v1";
 let data = load();
+let editingId = null;
+let receiptQueue = [];
 let viewer = document.getElementById("viewer");
 
 // Build the tax-year picker (UK tax year runs 6 April to 5 April)
@@ -199,9 +215,9 @@ async function addEntry(ev){
   btn.disabled = true;
   document.getElementById("saveMsg").textContent = "Saving…";
   const photoFile = f.photo.files[0];
-  const photo = await shrinkImage(photoFile);
+  const photo = photoFile ? await shrinkImage(photoFile) : null;
   const entry = {
-    id: Date.now().toString(36) + Math.random().toString(36).slice(2,6),
+    id: editingId || Date.now().toString(36) + Math.random().toString(36).slice(2,6),
     type: f.type.value,
     date: f.date.value,
     amount: parseFloat(f.amount.value) || 0,
@@ -210,14 +226,12 @@ async function addEntry(ev){
     party: f.party.value.trim(),
     desc: f.desc.value.trim(),
     pay: f.pay.value,
-    photo: photo
+    photo: photo || (editingId ? data.find(e=>e.id===editingId)?.photo : null) || null
   };
-  data.push(entry);
+  if (editingId) data[data.findIndex(e=>e.id===editingId)] = entry;
+  else data.push(entry);
   save();
-  f.reset();
-  f.date.value = new Date().toISOString().slice(0,10);
-  f.type.value = "out";
-  fillCats();
+  cancelEditing();
   btn.disabled = false;
   document.getElementById("saveMsg").textContent = "Saved ✓";
   setTimeout(()=>document.getElementById("saveMsg").textContent="", 2000);
@@ -225,8 +239,39 @@ async function addEntry(ev){
   render();
 }
 
+function editEntry(id){
+  const e = data.find(x=>x.id===id);
+  if (!e) return;
+  editingId = id;
+  const f = document.getElementById("f");
+  f.reset();
+  f.querySelector(`input[name="type"][value="${e.type}"]`).checked = true;
+  fillCats();
+  if (![...f.category.options].some(o=>o.value===e.category)) f.category.add(new Option(e.category,e.category));
+  for (const key of ["date","amount","category","party","desc","vat","pay"]) f.elements[key].value = e[key] ?? "";
+  document.getElementById("formTitle").textContent = "Edit entry";
+  document.getElementById("saveButton").textContent = "Save changes";
+  document.getElementById("cancelEdit").hidden = false;
+  document.getElementById("saveMsg").textContent = "Existing receipt is kept unless you choose a replacement.";
+  f.scrollIntoView({behavior:"smooth",block:"start"});
+}
+
+function cancelEditing(){
+  editingId = null;
+  const f = document.getElementById("f");
+  f.reset();
+  f.querySelector('input[name="type"][value="out"]').checked = true;
+  f.date.value = new Date().toISOString().slice(0,10);
+  fillCats();
+  document.getElementById("formTitle").textContent = "Add entry";
+  document.getElementById("saveButton").textContent = "Save entry";
+  document.getElementById("cancelEdit").hidden = true;
+  document.getElementById("saveMsg").textContent = "";
+}
+
 function deleteEntry(id){
   if (!confirm("Delete this entry and its photo?")) return;
+  if (editingId===id) cancelEditing();
   data = data.filter(e=>e.id !== id);
   save(); fillYears(); render();
 }
@@ -263,7 +308,7 @@ function render(){
       <td><span class="tag">${escapeHTML(e.category)}</span></td>
       <td>${e.photo ? `<img class="thumb" src="${e.photo}" onclick="viewPhoto('${e.id}')" alt="receipt">` : ""}</td>
       <td class="num ${e.type==="in"?"pos":"neg"}">${e.type==="in"?"+":"−"}${money(e.amount)}</td>
-      <td><button class="ghost" onclick="deleteEntry('${e.id}')">Delete</button></td>
+      <td><div class="actions"><button class="ghost" onclick="editEntry('${e.id}')">Edit</button><button class="danger" onclick="deleteEntry('${e.id}')">Delete</button></div></td>
     </tr>`).join("") : `<tr><td colspan="6" class="muted">No entries for this tax year yet.</td></tr>`;
 
   const byCat = {};
@@ -318,7 +363,7 @@ function importBackup(ev){
   r.readAsText(file);
 }
 
-// Reads a CSV in the format produced by the spreadsheet: Date,Type,Category,Supplier/Customer,Description,Amount (GBP),Notes
+// Quoted fields, commas in descriptions and CRLF files are supported.
 function parseCSV(text){
   const rows = [];
   let row = [], field = "", q = false;
@@ -339,36 +384,113 @@ function parseCSV(text){
   return rows;
 }
 
+function csvDate(value){
+  const s = String(value||"").trim();
+  let m = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+  if (m) return validDate(+m[1],+m[2],+m[3]);
+  m = s.match(/^(\d{1,2})[\/.-](\d{1,2})[\/.-](\d{4})$/);
+  return m ? validDate(+m[3],+m[2],+m[1]) : null;
+}
+function validDate(y,m,d){
+  const v = new Date(Date.UTC(y,m-1,d));
+  return v.getUTCFullYear()===y && v.getUTCMonth()===m-1 && v.getUTCDate()===d
+    ? `${y}-${String(m).padStart(2,"0")}-${String(d).padStart(2,"0")}` : null;
+}
+function csvAmount(value){
+  let s = String(value??"").trim().replace(/[£\s]/g,"");
+  if (!s) return NaN;
+  const negative = /^\(.*\)$/.test(s);
+  s = s.replace(/[()]/g,"");
+  if (s.includes(",") && s.includes(".")) s=s.replace(/,/g,"");
+  else if (/^-?\d+,\d{1,2}$/.test(s)) s=s.replace(",",".");
+  else s=s.replace(/,/g,"");
+  const n=Number(s);
+  return negative ? -n : n;
+}
+function recordKey(e){
+  return [e.date,e.type,e.category,e.party,e.desc,Number(e.amount).toFixed(2),Number(e.vat||0).toFixed(2),e.pay].join("\u001f");
+}
+function normalHeader(s){ return String(s||"").toLowerCase().replace(/[^a-z0-9]/g,""); }
+function importCSVText(text){
+  const rows=parseCSV(String(text).replace(/^\ufeff/,"")).filter(r=>r.some(v=>v.trim()));
+  if (!rows.length) throw new Error("The CSV is empty.");
+  const heads=rows[0].map(normalHeader);
+  const col=(names,fallback)=>{
+    const index=heads.findIndex(h=>names.includes(h));
+    return index<0 ? fallback : index;
+  };
+  const hasHeader=heads.includes("date") || heads.includes("transactiondate");
+  const idx={date:col(["date","transactiondate"],0),type:col(["type","transactiontype"],1),cat:col(["category"],2),party:col(["suppliercustomer","supplier","customer","payee"],3),desc:col(["description","details"],4),amount:col(["amountgbp","amount","total"],5),vat:col(["vatgbp","vat"],-1),pay:col(["payment","paymentmethod"],-1),notes:col(["notes"],-1)};
+  const seen=new Set(data.map(recordKey));
+  let added=0, skipped=0, duplicates=0;
+  for (const row of rows.slice(hasHeader?1:0)){
+    const date=csvDate(row[idx.date]);
+    if (!date){ skipped++; continue; } // Includes exported summary rows.
+    const signed=csvAmount(row[idx.amount]);
+    if (!Number.isFinite(signed) || signed===0){ skipped++; continue; }
+    const typeTxt=String(row[idx.type]||"").trim();
+    const type=/^(income|money in|in|credit|sale)$/i.test(typeTxt) ? "in"
+      : /^(expense|money out|out|debit)$/i.test(typeTxt) ? "out" : signed<0 ? "out" : "in";
+    const allowed=type==="in"?CATS_IN:CATS_OUT;
+    const rawCategory=String(row[idx.cat]||"").trim();
+    const category=allowed.includes(rawCategory)?rawCategory:(type==="in"?"Other income":"Other business expense");
+    const description=String(row[idx.desc]||"").trim();
+    const notes=idx.notes>=0 ? String(row[idx.notes]||"").trim() : "";
+    const entry={id:Date.now().toString(36)+Math.random().toString(36).slice(2,9),date,type,category,
+      party:String(row[idx.party]||"").trim(),desc:[description,notes].filter(Boolean).join(" - "),
+      amount:Math.abs(signed),vat:idx.vat>=0 ? Math.abs(csvAmount(row[idx.vat])||0):0,
+      pay:idx.pay>=0 ? String(row[idx.pay]||"Other").trim()||"Other":"Other",photo:null};
+    const key=recordKey(entry);
+    if (seen.has(key)){ duplicates++; continue; }
+    seen.add(key);data.push(entry);added++;
+  }
+  if (!added && !duplicates) throw new Error("No valid transactions found. Use Date, Type, Category, Supplier/Customer, Description and Amount columns.");
+  save();fillYears();render();
+  return `Imported ${added} entries. ${duplicates} duplicates ignored. ${skipped} invalid/summary rows skipped.`;
+}
+
 function importCSV(ev){
   const file = ev.target.files[0]; if (!file) return;
   const r = new FileReader();
   r.onload = ()=>{
     try {
-      const rows = parseCSV(String(r.result).replace(/^﻿/, ""))
-        .filter(x => x.length >= 6 && /^\d{4}-\d{2}-\d{2}$/.test(x[0]));
-      let added = 0, skipped = 0;
-      rows.forEach(x => {
-        const [date, typeTxt, catTxt, party, desc, amountTxt, notes] = x;
-        const amount = parseFloat(amountTxt);
-        if (!amount) { skipped++; return; }
-        const type = /income/i.test(typeTxt) ? "in" : "out";
-        const allowed = type === "in" ? CATS_IN : CATS_OUT;
-        const category = allowed.includes(catTxt) ? catTxt
-          : (type === "in" ? "Other income" : "Other business expense");
-        const description = [desc, notes].filter(Boolean).join(" - ");
-        data.push({
-          id: Date.now().toString(36) + Math.random().toString(36).slice(2,8),
-          type, date, amount, vat: 0, category,
-          party: party || "", desc: description, pay: "Other", photo: null
-        });
-        added++;
-      });
-      save(); fillYears(); render();
-      alert(`Imported ${added} entries.` + (skipped ? ` ${skipped} skipped (no amount).` : ""));
-    } catch(e){ alert("That CSV file could not be read."); }
+      alert(importCSVText(r.result));
+    } catch(e){ alert(`CSV import failed: ${e.message}`); }
   };
   r.readAsText(file);
   ev.target.value = "";
+}
+
+async function queueFiles(ev){
+  const files=[...ev.target.files];
+  ev.target.value="";
+  const csv=files.filter(f=>/\.csv$/i.test(f.name));
+  const images=files.filter(f=>f.type.startsWith("image/"));
+  for (const file of csv){
+    try { alert(`${file.name}: ${importCSVText(await file.text())}`); }
+    catch(e){ alert(`${file.name}: ${e.message}`); }
+  }
+  receiptQueue.push(...images);
+  updateReceiptQueue();
+}
+function updateReceiptQueue(){
+  document.getElementById("queueStatus").textContent=receiptQueue.length
+    ? `${receiptQueue.length} image(s) awaiting review. Review each before pressing Save entry.`
+    : "No images awaiting review.";
+  document.getElementById("queueActions").hidden=!receiptQueue.length;
+}
+function clearReceiptQueue(){receiptQueue=[];updateReceiptQueue();}
+function loadNextReceipt(){
+  if (!receiptQueue.length) return;
+  const existing=document.getElementById("photo").files.length;
+  if (existing && !confirm("Load the next image? Any unsaved details and receipt in the entry form will be replaced.")) return;
+  cancelEditing();
+  const file=receiptQueue.shift();
+  const dt=new DataTransfer();dt.items.add(file);
+  const input=document.getElementById("photo");input.files=dt.files;
+  updateReceiptQueue();
+  readReceipt({target:input});
+  document.getElementById("f").scrollIntoView({behavior:"smooth",block:"start"});
 }
 
 function download(name, text, type){
